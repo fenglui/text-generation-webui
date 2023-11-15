@@ -1,5 +1,7 @@
+import asyncio
 import json
 import os
+import traceback
 from threading import Thread
 
 import extensions.openai.completions as OAIcompletions
@@ -18,6 +20,7 @@ from fastapi.requests import Request
 from fastapi.responses import JSONResponse
 from modules import shared
 from modules.logging_colors import logger
+from modules.text_generation import stop_everything_event
 from pydub import AudioSegment
 from sse_starlette import EventSourceResponse
 
@@ -26,15 +29,27 @@ from .typing import (
     ChatCompletionResponse,
     CompletionRequest,
     CompletionResponse,
+    DecodeRequest,
+    DecodeResponse,
+    EmbeddingsRequest,
+    EmbeddingsResponse,
+    EncodeRequest,
+    EncodeResponse,
+    LoadModelRequest,
+    ModelInfoResponse,
+    TokenCountResponse,
     to_dict
 )
 
 params = {
     'embedding_device': 'cpu',
-    'embedding_model': 'all-mpnet-base-v2',
+    'embedding_model': 'sentence-transformers/all-mpnet-base-v2',
     'sd_webui_url': '',
     'debug': 0
 }
+
+
+streaming_semaphore = asyncio.Semaphore(1)
 
 
 def verify_api_key(authorization: str = Header(None)) -> None:
@@ -75,9 +90,14 @@ async def openai_completions(request: Request, request_data: CompletionRequest):
 
     if request_data.stream:
         async def generator():
-            response = OAIcompletions.stream_completions(to_dict(request_data), is_legacy=is_legacy)
-            for resp in response:
-                yield {"data": json.dumps(resp)}
+            async with streaming_semaphore:
+                response = OAIcompletions.stream_completions(to_dict(request_data), is_legacy=is_legacy)
+                for resp in response:
+                    disconnected = await request.is_disconnected()
+                    if disconnected:
+                        break
+
+                    yield {"data": json.dumps(resp)}
 
         return EventSourceResponse(generator())  # SSE streaming
 
@@ -93,9 +113,14 @@ async def openai_chat_completions(request: Request, request_data: ChatCompletion
 
     if request_data.stream:
         async def generator():
-            response = OAIcompletions.stream_chat_completions(to_dict(request_data), is_legacy=is_legacy)
-            for resp in response:
-                yield {"data": json.dumps(resp)}
+            async with streaming_semaphore:
+                response = OAIcompletions.stream_chat_completions(to_dict(request_data), is_legacy=is_legacy)
+                for resp in response:
+                    disconnected = await request.is_disconnected()
+                    if disconnected:
+                        break
+
+                    yield {"data": json.dumps(resp)}
 
         return EventSourceResponse(generator())  # SSE streaming
 
@@ -105,22 +130,18 @@ async def openai_chat_completions(request: Request, request_data: ChatCompletion
 
 
 @app.get("/v1/models")
-@app.get("/v1/engines")
+@app.get("/v1/models/{model}")
 async def handle_models(request: Request):
     path = request.url.path
-    is_legacy = 'engines' in path
-    is_list = request.url.path.split('?')[0].split('#')[0] in ['/v1/engines', '/v1/models']
+    is_list = request.url.path.split('?')[0].split('#')[0] == '/v1/models'
 
-    if is_legacy and not is_list:
-        model_name = path[path.find('/v1/engines/') + len('/v1/engines/'):]
-        resp = OAImodels.load_model(model_name)
-    elif is_list:
-        resp = OAImodels.list_models(is_legacy)
+    if is_list:
+        response = OAImodels.list_models()
     else:
         model_name = path[len('/v1/models/'):]
-        resp = OAImodels.model_info(model_name)
+        response = OAImodels.model_info_dict(model_name)
 
-    return JSONResponse(content=resp)
+    return JSONResponse(response)
 
 
 @app.get('/v1/billing/usage')
@@ -177,19 +198,16 @@ async def handle_image_generation(request: Request):
     return JSONResponse(response)
 
 
-@app.post("/v1/embeddings")
-async def handle_embeddings(request: Request):
-    body = await request.json()
-    encoding_format = body.get("encoding_format", "")
-
-    input = body.get('input', body.get('text', ''))
+@app.post("/v1/embeddings", response_model=EmbeddingsResponse)
+async def handle_embeddings(request: Request, request_data: EmbeddingsRequest):
+    input = request_data.input
     if not input:
         raise HTTPException(status_code=400, detail="Missing required argument input")
 
     if type(input) is str:
         input = [input]
 
-    response = OAIembeddings.embeddings(input, encoding_format)
+    response = OAIembeddings.embeddings(input, request_data.encoding_format)
     return JSONResponse(response)
 
 
@@ -204,27 +222,67 @@ async def handle_moderations(request: Request):
     return JSONResponse(response)
 
 
-@app.post("/api/v1/token-count")
-async def handle_token_count(request: Request):
-    body = await request.json()
-    response = token_count(body['prompt'])
+@app.post("/v1/internal/encode", response_model=EncodeResponse)
+async def handle_token_encode(request_data: EncodeRequest):
+    response = token_encode(request_data.text)
     return JSONResponse(response)
 
 
-@app.post("/api/v1/token/encode")
-async def handle_token_encode(request: Request):
-    body = await request.json()
-    encoding_format = body.get("encoding_format", "")
-    response = token_encode(body["input"], encoding_format)
+@app.post("/v1/internal/decode", response_model=DecodeResponse)
+async def handle_token_decode(request_data: DecodeRequest):
+    response = token_decode(request_data.tokens)
     return JSONResponse(response)
 
 
-@app.post("/api/v1/token/decode")
-async def handle_token_decode(request: Request):
-    body = await request.json()
-    encoding_format = body.get("encoding_format", "")
-    response = token_decode(body["input"], encoding_format)
-    return JSONResponse(response, no_debug=True)
+@app.post("/v1/internal/token-count", response_model=TokenCountResponse)
+async def handle_token_count(request_data: EncodeRequest):
+    response = token_count(request_data.text)
+    return JSONResponse(response)
+
+
+@app.post("/v1/internal/stop-generation")
+async def handle_stop_generation(request: Request):
+    stop_everything_event()
+    return JSONResponse(content="OK")
+
+
+@app.get("/v1/internal/model/info", response_model=ModelInfoResponse)
+async def handle_model_info():
+    payload = OAImodels.get_current_model_info()
+    return JSONResponse(content=payload)
+
+
+@app.post("/v1/internal/model/load")
+async def handle_load_model(request_data: LoadModelRequest):
+    '''
+    This endpoint is experimental and may change in the future.
+
+    The "args" parameter can be used to modify flags like "--load-in-4bit"
+    or "--n-gpu-layers" before loading a model. Example:
+
+    "args": {
+      "load_in_4bit": true,
+      "n_gpu_layers": 12
+    }
+
+    Note that those settings will remain after loading the model. So you
+    may need to change them back to load a second model.
+
+    The "settings" parameter is also a dict but with keys for the
+    shared.settings object. It can be used to modify the default instruction
+    template like this:
+
+    "settings": {
+      "instruction_template": "Alpaca"
+    }
+    '''
+
+    try:
+        OAImodels._load_model(to_dict(request_data))
+        return JSONResponse(content="OK")
+    except:
+        traceback.print_exc()
+        return HTTPException(status_code=400, detail="Failed to load the model.")
 
 
 def run_server():
@@ -236,14 +294,14 @@ def run_server():
 
     if shared.args.public_api:
         def on_start(public_url: str):
-            logger.info(f'OpenAI compatible API URL:\n\n{public_url}/v1\n')
+            logger.info(f'OpenAI compatible API URL:\n\n{public_url}\n')
 
         _start_cloudflared(port, shared.args.public_api_id, max_attempts=3, on_start=on_start)
     else:
         if ssl_keyfile and ssl_certfile:
-            logger.info(f'OpenAI compatible API URL:\n\nhttps://{server_addr}:{port}/v1\n')
+            logger.info(f'OpenAI compatible API URL:\n\nhttps://{server_addr}:{port}\n')
         else:
-            logger.info(f'OpenAI compatible API URL:\n\nhttp://{server_addr}:{port}/v1\n')
+            logger.info(f'OpenAI compatible API URL:\n\nhttp://{server_addr}:{port}\n')
 
     if shared.args.api_key:
         logger.info(f'OpenAI API key:\n\n{shared.args.api_key}\n')

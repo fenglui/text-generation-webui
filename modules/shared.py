@@ -55,6 +55,7 @@ settings = {
     'character': 'Assistant',
     'name1': 'You',
     'instruction_template': 'Alpaca',
+    'custom_system_message': '',
     'chat-instruct_command': 'Continue the chat dialogue below. Write a single reply for the character "<|character|>".\n\n<|prompt|>',
     'autoload_model': False,
     'default_extensions': ['gallery'],
@@ -113,6 +114,7 @@ parser.add_argument('--n-gpu-layers', type=int, default=0, help='Number of layer
 parser.add_argument('--tensor_split', type=str, default=None, help='Split the model across multiple GPUs. Comma-separated list of proportions. Example: 18,17.')
 parser.add_argument('--llama_cpp_seed', type=int, default=0, help='Seed for llama-cpp models. Default is 0 (random).')
 parser.add_argument('--numa', action='store_true', help='Activate NUMA task allocation for llama.cpp.')
+parser.add_argument('--logits_all', action='store_true', help='Needs to be set for perplexity evaluation to work. Otherwise, ignore it, as it makes prompt processing slower.')
 parser.add_argument('--cache-capacity', type=str, help='Maximum cache capacity (llama-cpp-python). Examples: 2000MiB, 2GiB. When provided without units, bytes will be assumed.')
 
 # ExLlama
@@ -256,9 +258,8 @@ if args.multimodal_pipeline is not None:
     add_extension('multimodal')
 
 # Activate the API extension
-if args.api:
-    # add_extension('openai', last=True)
-    add_extension('api', last=True)
+if args.api or args.public_api:
+    add_extension('openai', last=True)
 
 # Load model-specific settings
 with Path(f'{args.model_dir}/config.yaml') as p:
