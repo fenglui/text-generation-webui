@@ -15,7 +15,7 @@ Its goal is to become the [AUTOMATIC1111/stable-diffusion-webui](https://github.
 * Dropdown menu for quickly switching between different models.
 * Large number of extensions (built-in and user-contributed), including Coqui TTS for realistic voice outputs, Whisper STT for voice inputs, translation, [multimodal pipelines](https://github.com/oobabooga/text-generation-webui/tree/main/extensions/multimodal), vector databases, Stable Diffusion integration, and a lot more. See [the wiki](https://github.com/oobabooga/text-generation-webui/wiki/07-%E2%80%90-Extensions) and [the extensions directory](https://github.com/oobabooga/text-generation-webui-extensions) for details.
 * [Chat with custom characters](https://github.com/oobabooga/text-generation-webui/wiki/03-%E2%80%90-Parameters-Tab#character).
-* Precise chat templates for instruction-following models, including Llama-2-chat, Alpaca, Vicuna, Mistral, and many others.
+* Precise chat templates for instruction-following models, including Llama-2-chat, Alpaca, Vicuna, Mistral.
 * LoRA: train new LoRAs with your own data, load/unload LoRAs on the fly for generation.
 * Transformers library integration: load models in 4-bit or 8-bit precision through bitsandbytes, use llama.cpp with transformers samplers (`llamacpp_HF` loader), CPU inference in 32-bit precision using PyTorch.
 * OpenAI-compatible API server with Chat and Completions endpoints -- see the [examples](https://github.com/oobabooga/text-generation-webui/wiki/12-%E2%80%90-OpenAI-API#examples).
@@ -237,7 +237,7 @@ List of command-line flags
 | `--no_use_fast`                             | Set use_fast=False while loading the tokenizer (it's True by default). Use this if you have any problems related to use_fast. |
 | `--use_flash_attention_2`                   | Set use_flash_attention_2=True while loading the model. |
 
-#### Accelerate 4-bit
+#### bitsandbytes 4-bit
 
 ⚠️  Requires minimum compute of 7.0 on Windows at the moment.
 
@@ -252,6 +252,7 @@ List of command-line flags
 
 | Flag        | Description |
 |-------------|-------------|
+| `--tensorcores`  | Use llama-cpp-python compiled with tensor cores support. This increases performance on RTX cards. NVIDIA only. |
 | `--n_ctx N_CTX` | Size of the prompt context. |
 | `--threads` | Number of threads to use. |
 | `--threads-batch THREADS_BATCH` | Number of threads to use for batches/prompt processing. |
@@ -263,6 +264,7 @@ List of command-line flags
 | `--tensor_split TENSOR_SPLIT`       | Split the model across multiple GPUs. Comma-separated list of proportions. Example: 18,17. |
 | `--numa`      | Activate NUMA task allocation for llama.cpp. |
 | `--logits_all`| Needs to be set for perplexity evaluation to work. Otherwise, ignore it, as it makes prompt processing slower. |
+| `--no_offload_kqv` | Do not offload the K, Q, V to the GPU. This saves VRAM but reduces the performance. |
 | `--cache-capacity CACHE_CAPACITY`   | Maximum cache capacity (llama-cpp-python). Examples: 2000MiB, 2GiB. When provided without units, bytes will be assumed. |
 
 #### ExLlama
@@ -274,6 +276,7 @@ List of command-line flags
 |`--cfg-cache`                         | ExLlama_HF: Create an additional cache for CFG negative prompts. Necessary to use CFG with that loader, but not necessary for CFG with base ExLlama. |
 |`--no_flash_attn`                     | Force flash-attention to not be used. |
 |`--cache_8bit`                        | Use 8-bit cache to save VRAM. |
+|`--num_experts_per_token NUM_EXPERTS_PER_TOKEN` |  Number of experts to use for generation. Applies to MoE models like Mixtral. |
 
 #### AutoGPTQ
 
@@ -303,6 +306,12 @@ List of command-line flags
 | Flag        | Description |
 |-------------|-------------|
 | `--model_type MODEL_TYPE` | Model type of pre-quantized model. Currently gpt2, gptj, gptneox, falcon, llama, mpt, starcoder (gptbigcode), dollyv2, and replit are supported. |
+
+#### HQQ
+
+| Flag        | Description |
+|-------------|-------------|
+| `--hqq-backend` | Backend for the HQQ loader. Valid options: PYTORCH, PYTORCH_COMPILE, ATEN. |
 
 #### DeepSpeed
 
@@ -377,7 +386,7 @@ text-generation-webui
     └── llama-2-13b-chat.Q4_K_M.gguf
 ```
 
-* Other models (like 16-bit transformers models and GPTQ models) are made of several files and must be placed in a subfolder. Example:
+* The remaining model types (like 16-bit transformers models and GPTQ models) are made of several files and must be placed in a subfolder. Example:
 
 ```
 text-generation-webui

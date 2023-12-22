@@ -18,7 +18,8 @@ from modules.callbacks import (
     _StopEverythingStoppingCriteria
 )
 from modules.extensions import apply_extensions
-from modules.grammar import GrammarLogitsProcessor
+from modules.grammar.grammar_utils import initialize_grammar
+from modules.grammar.logits_process import GrammarConstrainedLogitsProcessor
 from modules.html_generator import generate_4chan_html, generate_basic_html
 from modules.logging_colors import logger
 from modules.models import clear_torch_cache, local_rank
@@ -264,7 +265,7 @@ def apply_stopping_strings(reply, all_stop_strings):
 
 def get_reply_from_output_ids(output_ids, state, starting_from=0):
     reply = decode(output_ids[starting_from:], state['skip_special_tokens'])
-    if hasattr(shared.tokenizer, 'convert_ids_to_tokens') and len(output_ids) > starting_from and shared.tokenizer.convert_ids_to_tokens(int(output_ids[starting_from])).startswith('▁'):
+    if (hasattr(shared.tokenizer, 'convert_ids_to_tokens') and len(output_ids) > starting_from and shared.tokenizer.convert_ids_to_tokens(int(output_ids[starting_from])).startswith('▁')) and not reply.startswith(' '):
         reply = ' ' + reply
 
     return reply
@@ -317,11 +318,17 @@ def generate_reply_HF(question, original_question, seed, state, stopping_strings
     generate_params['stopping_criteria'] = transformers.StoppingCriteriaList()
     generate_params['stopping_criteria'].append(_StopEverythingStoppingCriteria())
 
+    # Logits processor
     processor = state.get('logits_processor', LogitsProcessorList([]))
-    # In case a processor is passed by itself.
     if not isinstance(processor, LogitsProcessorList):
         processor = LogitsProcessorList([processor])
-    processor.append(GrammarLogitsProcessor(state['grammar_string']))
+
+    # Grammar
+    if state['grammar_string'].strip() != '':
+        grammar = initialize_grammar(state['grammar_string'])
+        grammar_processor = GrammarConstrainedLogitsProcessor(grammar)
+        processor.append(grammar_processor)
+
     apply_extensions('logits_processor', processor, input_ids)
     generate_params['logits_processor'] = processor
 

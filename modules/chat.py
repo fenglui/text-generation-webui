@@ -95,7 +95,8 @@ def generate_chat_prompt(user_input, state, **kwargs):
     else:
         renderer = chat_renderer
         if state['context'].strip() != '':
-            messages.append({"role": "system", "content": state['context']})
+            context = replace_character_names(state['context'], state['name1'], state['name2'])
+            messages.append({"role": "system", "content": context})
 
     insert_pos = len(messages)
     for user_msg, assistant_msg in reversed(history):
@@ -112,6 +113,13 @@ def generate_chat_prompt(user_input, state, **kwargs):
     if user_input and not impersonate and not _continue:
         messages.append({"role": "user", "content": user_input})
 
+    def remove_extra_bos(prompt):
+        for bos_token in ['<s>', '<|startoftext|>']:
+            while prompt.startswith(bos_token):
+                prompt = prompt[len(bos_token):]
+
+        return prompt
+
     def make_prompt(messages):
         if state['mode'] == 'chat-instruct' and _continue:
             prompt = renderer(messages=messages[:-1])
@@ -123,6 +131,7 @@ def generate_chat_prompt(user_input, state, **kwargs):
             if state['custom_system_message'].strip() != '':
                 outer_messages.append({"role": "system", "content": state['custom_system_message']})
 
+            prompt = remove_extra_bos(prompt)
             command = state['chat-instruct_command']
             command = command.replace('<|character|>', state['name2'] if not impersonate else state['name1'])
             command = command.replace('<|prompt|>', prompt)
@@ -153,6 +162,7 @@ def generate_chat_prompt(user_input, state, **kwargs):
 
                 prompt += prefix
 
+        prompt = remove_extra_bos(prompt)
         return prompt
 
     prompt = make_prompt(messages)
@@ -210,10 +220,6 @@ def chatbot_wrapper(text, state, regenerate=False, _continue=False, loading_mess
     output = copy.deepcopy(history)
     output = apply_extensions('history', output)
     state = apply_extensions('state', state)
-    if shared.model_name == 'None' or shared.model is None:
-        logger.error("No model is loaded! Select one in the Model tab.")
-        yield output
-        return
 
     visible_text = None
     stopping_strings = get_stopping_strings(state)
@@ -251,6 +257,9 @@ def chatbot_wrapper(text, state, regenerate=False, _continue=False, loading_mess
                     'visible': output['visible'][:-1] + [[visible_text, last_reply[1] + '...']],
                     'internal': output['internal']
                 }
+
+    if shared.model_name == 'None' or shared.model is None:
+        raise ValueError("No model is loaded! Select one in the Model tab.")
 
     # Generate the prompt
     kwargs = {
@@ -760,13 +769,13 @@ def delete_character(name, instruct=False):
 
 def jinja_template_from_old_format(params, verbose=False):
     MASTER_TEMPLATE = """
-{%- set found_item = false -%}
+{%- set ns = namespace(found=false) -%}
 {%- for message in messages -%}
     {%- if message['role'] == 'system' -%}
-        {%- set found_item = true -%}
+        {%- set ns.found = true -%}
     {%- endif -%}
 {%- endfor -%}
-{%- if not found_item -%}
+{%- if not ns.found -%}
     {{- '<|PRE-SYSTEM|>' + '<|SYSTEM-MESSAGE|>' + '<|POST-SYSTEM|>' -}}
 {%- endif %}
 {%- for message in messages %}
