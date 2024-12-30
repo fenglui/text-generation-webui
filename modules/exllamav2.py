@@ -2,29 +2,25 @@ import traceback
 from pathlib import Path
 
 import torch
+
 from exllamav2 import (
     ExLlamaV2,
     ExLlamaV2Cache,
     ExLlamaV2Cache_8bit,
+    ExLlamaV2Cache_Q4,
+    ExLlamaV2Cache_Q6,
+    ExLlamaV2Cache_Q8,
+    ExLlamaV2Cache_TP,
     ExLlamaV2Config,
     ExLlamaV2Tokenizer
 )
 from exllamav2.generator import ExLlamaV2Sampler, ExLlamaV2StreamingGenerator
-
 from modules import shared
 from modules.logging_colors import logger
 from modules.text_generation import get_max_prompt_length
 
 try:
     import flash_attn
-except ModuleNotFoundError:
-    logger.warning(
-        'You are running ExLlamaV2 without flash-attention. This will cause the VRAM usage '
-        'to be a lot higher than it could be.\n'
-        'Try installing flash-attention following the instructions here: '
-        'https://github.com/Dao-AILab/flash-attention#installation-and-features'
-    )
-    pass
 except Exception:
     logger.warning('Failed to load flash-attention due to the following error:\n')
     traceback.print_exc()
@@ -47,6 +43,8 @@ class Exllamav2Model:
         config.scale_pos_emb = shared.args.compress_pos_emb
         config.scale_alpha_value = shared.args.alpha_value
         config.no_flash_attn = shared.args.no_flash_attn
+        config.no_xformers = shared.args.no_xformers
+        config.no_sdpa = shared.args.no_sdpa
         config.num_experts_per_token = int(shared.args.num_experts_per_token)
 
         model = ExLlamaV2(config)
@@ -55,14 +53,37 @@ class Exllamav2Model:
         if shared.args.gpu_split:
             split = [float(alloc) for alloc in shared.args.gpu_split.split(",")]
 
-        model.load(split)
+        if shared.args.enable_tp:
+            model.load_tp(split)
+        elif not shared.args.autosplit:
+            model.load(split)
+
+        # Determine the correct cache type
+        kv_cache_type = shared.args.cache_type.lower()
+
+        if kv_cache_type == 'fp16':
+            cache_type = ExLlamaV2Cache
+        elif kv_cache_type == 'fp8':
+            cache_type = ExLlamaV2Cache_8bit
+        elif kv_cache_type == 'q8':
+            cache_type = ExLlamaV2Cache_Q8
+        elif kv_cache_type == 'q6':
+            cache_type = ExLlamaV2Cache_Q6
+        elif kv_cache_type == 'q4':
+            cache_type = ExLlamaV2Cache_Q4
+        else:
+            raise ValueError(f"Invalid cache type for ExLlamaV2: {cache_type}. Valid options are: fp16, fp8, q8, q6, q4.")
+
+        # Use TP if specified
+        if shared.args.enable_tp:
+            cache = ExLlamaV2Cache_TP(model, base=cache_type)
+        else:
+            cache = cache_type(model, lazy=shared.args.autosplit)
+
+        if shared.args.autosplit and not shared.args.enable_tp:
+            model.load_autosplit(cache)
 
         tokenizer = ExLlamaV2Tokenizer(config)
-        if shared.args.cache_8bit:
-            cache = ExLlamaV2Cache_8bit(model)
-        else:
-            cache = ExLlamaV2Cache(model)
-
         generator = ExLlamaV2StreamingGenerator(model, cache, tokenizer)
 
         result = self()
